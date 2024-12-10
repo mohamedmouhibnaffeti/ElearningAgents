@@ -2,6 +2,7 @@ import pickle
 from flask import Flask, render_template, jsonify, request
 import ollama
 import psycopg2
+import json
 
 
 
@@ -44,25 +45,24 @@ def load_q_table(filename):
 
 def update_evaluation_Q_table(evaluation, feedback, quiz_id):
     state_action = (quiz_id, evaluation)
-    
+
     # Initialize Q-value if not present
     if state_action not in Q_table:
-        Q_table[state_action] = 0
+        Q_table[state_action] = 0.5  # Small positive baseline
     
-    # Retrieve the old Q-value
     old_value = Q_table[state_action]
-    reward = feedback  # Feedback is treated as the reward
-    
-    # Get the best Q-value for future states
-    future_q_values = [Q_table.get((quiz_id, next_action), 0) for next_action in Q_table]
-    best_future_q = max(future_q_values) if future_q_values else 0  # Use 0 if no future Q-values exist
-    
-    # Calculate the updated Q-value
+    reward = feedback
+
+    # Filter valid actions for future Q-values
+    valid_actions = [action for action in Q_table if action[0] == quiz_id]
+    future_q_values = [Q_table.get(action, 0) for action in valid_actions]
+    best_future_q = max(future_q_values, default=0)
+
+    # Update Q-value
     new_value = old_value + learning_rate * (reward + discount_factor * best_future_q - old_value)
-    
-    # Update the Q-table with the new Q-value
     Q_table[state_action] = new_value
-    print(f"Updated Q-value for user {quiz_id} and evaluation {evaluation}: {Q_table[state_action]}")
+
+    print(f"Updated Q-value for quiz {quiz_id} and evaluation {evaluation}: {Q_table[state_action]}")
     save_q_table("evaluation_Q_table.pkl")
 
 
@@ -73,37 +73,21 @@ def update_evaluation_Q_table(evaluation, feedback, quiz_id):
 
 
 def llama_evaluation(quiz_id, answers):
-    load_q_table("Evaluation_Q_table.pkl")
+    load_q_table("evaluation_Q_table.pkl")
     filtered_data = {key: value for key, value in Q_table.items() if key[0] == quiz_id}
 
     prompt = (
-        f"Given the data: {answers} and the provided Q-values table: {filtered_data}, "
-        "add an attribute 'modelEval' to each instance in the data to represent the evaluation of the 'answer' compared to the 'question' and 'actualAnswer' attributes. "
-        "Ensure that 'modelEval' does not exceed the 'max_score' for each instance ad it should be a number. "
-        "Output only the valid JSON array in this format and this format only: "
+        f"Evaluate the following answers: {answers} using the Q-table: {filtered_data}. "
+        "For each answer, add a 'modelEval' field that evaluates the accuracy of the answer based on the Q-table. "
+        "'modelEval' MUST be a NUMBER between 0 and 'max_score'. The evaluation must follow STRICT grading rules if the answer is correct give full mark which shouldn't exceed 'max_score' else just give 0. "
+        "The response MUST be a valid JSON array in this EXACT format: "
         "[{'questionID': questionID, 'answer': answer, 'question': question, 'max_score': max_score, 'modelEval': modelEval}]. "
-        "Respond strictly with a valid JSON array and do not include any explanation, text, or code around it."
+        "DO NOT include any text, comments, explanations, or additional characters outside the JSON array. "
+        "ONLY return the JSON array without the additional `` at the beginning and the end of it JUST give me an array that's all."
     )
-
-
-
-        
-
     response = ollama.chat(model="llama3.2", messages=[{"role": "user", "content": prompt}])
     return response["message"]["content"].strip()
-        
-
-
-
-
-
-
-
-
-
-
-
-
+    
 
 
 
